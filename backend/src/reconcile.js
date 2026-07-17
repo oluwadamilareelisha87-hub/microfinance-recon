@@ -195,3 +195,84 @@ console.log(`\n❌ UNMATCHED — BANK ONLY, TRUE EXCEPTIONS (${trueStatementOnly
 trueStatementOnlyMain.forEach(row => console.log(`   Statement #${row.id}: ${row.narration} (₦${getStatementAmount(row)})`));
 
 console.log('\n=========================================================');
+
+// --- Layer 2: Fuzzy Name Matching (confidence scoring) ---
+
+const stringSimilarity = require('string-similarity');
+
+// Extract the name portion from a narration (text after the first "|")
+function extractName(narration) {
+  const parts = narration.split('|');
+  return (parts[1] || parts[0]).trim();
+}
+
+const NAME_SIMILARITY_THRESHOLD = 0.8;
+
+console.log('\n\n========== LAYER 2: NAME CONFIDENCE CHECK ==========');
+
+matched.forEach(r => {
+  const ledgerName = extractName(r.ledgerNarration);
+  // Use the first candidate's narration (matched entries only have 1 non-conflicting candidate)
+  const stmtNarration = r.candidates[0].narration;
+  const stmtName = extractName(stmtNarration);
+
+  const score = stringSimilarity.compareTwoStrings(ledgerName, stmtName);
+  const confidence = score >= NAME_SIMILARITY_THRESHOLD ? 'HIGH' : 'LOW';
+
+  console.log(`Ledger #${r.ledgerId}: "${ledgerName}" vs "${stmtName}" → ${(score * 100).toFixed(1)}% (${confidence} confidence)`);
+});
+
+console.log('\n=====================================================');
+
+// --- Fee-Retention Pattern Detection (handles cases like the ₦9.25 discrepancy) ---
+
+// Known fee amounts we've observed in real bank data (Day 3 documents)
+const KNOWN_FEE_PATTERNS = [
+  { amount: 10, reason: 'NIP FEE retained (not refunded on reversal)' },
+  { amount: 9.25, reason: 'NIP FEE retained, net of its own VAT (₦10 - ₦0.75)' },
+  { amount: 0.75, reason: 'VAT FEE retained (not refunded on reversal)' },
+  { amount: 0.53, reason: 'VAT FEE retained (lower-tier transaction, not refunded)' }
+];
+
+const FEE_TOLERANCE = 0.05; // allow tiny rounding differences
+
+function explainDiscrepancy(expectedAmount, actualAmount) {
+  const gap = Math.round((expectedAmount - actualAmount) * 100) / 100;
+  const match = KNOWN_FEE_PATTERNS.find(p => Math.abs(p.amount - Math.abs(gap)) <= FEE_TOLERANCE);
+  if (match) {
+    return { gap, explained: true, reason: match.reason };
+  }
+  return { gap, explained: false, reason: null };
+}
+
+console.log('\n\n========== FEE-RETENTION PATTERN CHECK ==========');
+console.log('Example using the real ₦9.25 case (₦47,510 expected vs ₦47,500.75 refunded):');
+
+const example = explainDiscrepancy(47510, 47500.75);
+console.log(`Gap: ₦${example.gap} → ${example.explained ? '✅ Explained: ' + example.reason : '❌ Unexplained — needs review'}`);
+
+console.log('\n===================================================');
+
+// --- Apply Fee-Retention Explanation to Real Unmatched Entries ---
+
+console.log('\n\n========== APPLYING PATTERN CHECK TO UNMATCHED ENTRIES ==========');
+
+// For each ledger-only unmatched entry, check if there's a statement row with a CLOSE (not exact) amount
+unmatched.forEach(r => {
+  const closeMatches = statementRows.filter(stmtRow => {
+    const stmtAmount = getStatementAmount(stmtRow);
+    const gap = Math.abs(r.ledgerAmount - stmtAmount);
+    return gap > 0 && gap <= 15; // within a plausible fee-sized gap, but not an exact match
+  });
+
+  if (closeMatches.length > 0) {
+    closeMatches.forEach(stmtRow => {
+      const stmtAmount = getStatementAmount(stmtRow);
+      const result = explainDiscrepancy(r.ledgerAmount, stmtAmount);
+      console.log(`Ledger #${r.ledgerId} (₦${r.ledgerAmount}) vs Statement #${stmtRow.id} (₦${stmtAmount})`);
+      console.log(`  Gap: ₦${result.gap} → ${result.explained ? '✅ ' + result.reason : '❌ Unexplained — needs review'}`);
+    });
+  }
+});
+
+console.log('\n===================================================');
