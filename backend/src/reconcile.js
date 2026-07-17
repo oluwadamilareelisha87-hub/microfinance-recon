@@ -440,3 +440,24 @@ function calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow) {
 
   return { ...score, adjustedCombined: Math.round(adjustedCombined * 1000) / 1000, integrity };
 }
+
+
+// --- Duplicate Suspect Tie-Breaking ---
+
+console.log('\n\n========== DUPLICATE SUSPECT ANALYSIS ==========');
+
+duplicateSuspects.forEach(r => {
+  const ledgerRow = ledgerRows.find(l => l.id === r.ledgerId);
+  console.log(`\nLedger #${r.ledgerId}: "${r.ledgerNarration}" (${ledgerRow.transaction_date})`);
+
+  r.candidates.forEach(c => {
+    const stmtRow = statementRows.find(s => s.id === c.id);
+    const score = calculateMatchScore(ledgerRow, stmtRow);
+    console.log(`  → Statement #${c.id} (${stmtRow.date}): date diff = ${daysApart(ledgerRow.transaction_date, stmtRow.date)} day(s), combined score = ${(score.combined * 100).toFixed(1)}%`);
+  });
+});
+
+console.log('\nRecommendation: When scores are truly tied, flag BOTH for manual review —');
+console.log('do not auto-pick one, since picking wrong misallocates a real transaction.');
+
+console.log('\n=================================================');
