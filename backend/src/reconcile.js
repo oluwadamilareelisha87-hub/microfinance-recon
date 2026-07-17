@@ -461,3 +461,33 @@ console.log('\nRecommendation: When scores are truly tied, flag BOTH for manual 
 console.log('do not auto-pick one, since picking wrong misallocates a real transaction.');
 
 console.log('\n=================================================');
+
+// --- Ranked Suggestions for Bank-Only (Statement) Exceptions ---
+
+console.log('\n\n========== BANK-ONLY EXCEPTIONS: RANKED SUGGESTIONS ==========');
+
+trueStatementOnlyMain.forEach(stmtRow => {
+  const stmtAmount = getStatementAmount(stmtRow);
+
+  const scored = ledgerRows
+    .map(ledgerRow => ({
+      ledgerRow,
+      s: calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow)
+    }))
+    .filter(x => x.s.nameScore >= 0.5 && (x.s.adjustedCombined >= SUGGESTION_MIN_SCORE || x.s.integrity.flag === 'UNEXPLAINED_GAP'))
+    .sort((a, b) => b.s.adjustedCombined - a.s.adjustedCombined)
+    .slice(0, 3);
+
+  console.log(`\nStatement #${stmtRow.id}: "${extractName(stmtRow.narration)}" (₦${stmtAmount})`);
+  if (scored.length === 0) {
+    console.log('  No plausible ledger candidates found — likely a genuine unrecorded bank-side transaction.');
+  } else {
+    scored.forEach((x, i) => {
+      const warn = x.s.integrity.flag === 'UNEXPLAINED_GAP' ? `  ⚠️  Amount mismatch (₦${x.s.integrity.gap} gap) — not auto-confirmable` : '';
+      console.log(`  ${i + 1}. Ledger #${x.ledgerRow.id}: "${extractName(x.ledgerRow.narration)}" → ${(x.s.adjustedCombined * 100).toFixed(1)}% confidence`);
+      if (warn) console.log(warn);
+    });
+  }
+});
+
+console.log('\n=================================================================');
