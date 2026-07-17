@@ -276,3 +276,67 @@ unmatched.forEach(r => {
 });
 
 console.log('\n===================================================');
+
+// --- Combined Confidence Scoring for Match Suggestions ---
+
+function calculateMatchScore(ledgerRow, stmtRow) {
+  const ledgerAmount = getLedgerAmount(ledgerRow);
+  const stmtAmount = getStatementAmount(stmtRow);
+
+  // Amount score: 1.0 if exact, decreasing as gap grows (capped at 0)
+  const amountGap = Math.abs(ledgerAmount - stmtAmount);
+  const amountScore = amountGap === 0 ? 1.0 : Math.max(0, 1 - (amountGap / ledgerAmount));
+
+  // Date score: 1.0 if same day, decreasing with days apart
+  const gap = daysApart(ledgerRow.transaction_date, stmtRow.date);
+  const dateScore = Math.max(0, 1 - (gap / 5)); // 5+ days apart = 0 score
+
+  // Name score: fuzzy similarity between extracted names
+  const ledgerName = extractName(ledgerRow.narration);
+  const stmtName = extractName(stmtRow.narration);
+  const nameScore = stringSimilarity.compareTwoStrings(ledgerName, stmtName);
+
+  // Weighted combined score — amount matters most, then name, then date
+  const combined = (amountScore * 0.5) + (nameScore * 0.35) + (dateScore * 0.15);
+
+  return {
+    combined: Math.round(combined * 1000) / 1000,
+    amountScore: Math.round(amountScore * 1000) / 1000,
+    dateScore: Math.round(dateScore * 1000) / 1000,
+    nameScore: Math.round(nameScore * 1000) / 1000
+  };
+}
+
+console.log('\n\n========== TESTING COMBINED SCORE ==========');
+const testScore = calculateMatchScore(ledgerRows[0], statementRows[0]);
+console.log('Ledger #1 vs Statement #1:', testScore);
+console.log('\n=============================================');
+
+// --- Ranked Match Suggestions ---
+
+console.log('\n\n========== RANKED MATCH SUGGESTIONS ==========');
+
+const SUGGESTION_MIN_SCORE = 0.5; // ignore wildly unrelated candidates
+
+ledgerRows.forEach(ledgerRow => {
+  // Only compare against MAIN statement lines (not fee/reversal lines)
+  const mainStatementRows = statementClassified.filter(row => row.lineType === 'MAIN');
+
+  const scored = mainStatementRows
+    .map(stmtRow => ({
+      stmtRow,
+      score: calculateMatchScore(ledgerRow, stmtRow)
+    }))
+    .filter(s => s.score.combined >= SUGGESTION_MIN_SCORE)
+    .sort((a, b) => b.score.combined - a.score.combined)
+    .slice(0, 3); // top 3 only
+
+  if (scored.length > 0) {
+    console.log(`\nLedger #${ledgerRow.id}: "${extractName(ledgerRow.narration)}" (₦${getLedgerAmount(ledgerRow)})`);
+    scored.forEach((s, i) => {
+      console.log(`  ${i + 1}. Statement #${s.stmtRow.id}: "${extractName(s.stmtRow.narration)}" (₦${getStatementAmount(s.stmtRow)}) → ${(s.score.combined * 100).toFixed(1)}% confidence`);
+    });
+  }
+});
+
+console.log('\n=================================================');
