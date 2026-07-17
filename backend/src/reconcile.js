@@ -340,3 +340,103 @@ ledgerRows.forEach(ledgerRow => {
 });
 
 console.log('\n=================================================');
+
+// --- Amount Integrity Check (prevents high confidence from masking real mismatches) ---
+
+function checkAmountIntegrity(ledgerAmount, stmtAmount) {
+  const gap = Math.abs(ledgerAmount - stmtAmount);
+  if (gap === 0) return { flag: 'EXACT', gap };
+
+  const feeExplanation = explainDiscrepancy(ledgerAmount, stmtAmount);
+  if (feeExplanation.explained) return { flag: 'EXPLAINED_FEE', gap, reason: feeExplanation.reason };
+
+  return { flag: 'UNEXPLAINED_GAP', gap };
+}
+
+console.log('\n\n========== RANKED SUGGESTIONS WITH AMOUNT INTEGRITY ==========');
+
+ledgerRows.forEach(ledgerRow => {
+  const mainStatementRows = statementClassified.filter(row => row.lineType === 'MAIN');
+  const ledgerAmount = getLedgerAmount(ledgerRow);
+
+  const scored = mainStatementRows
+    .map(stmtRow => ({
+      stmtRow,
+      score: calculateMatchScore(ledgerRow, stmtRow),
+      integrity: checkAmountIntegrity(ledgerAmount, getStatementAmount(stmtRow))
+    }))
+    .filter(s => s.score.combined >= SUGGESTION_MIN_SCORE)
+    .sort((a, b) => b.score.combined - a.score.combined)
+    .slice(0, 3);
+
+  if (scored.length > 0) {
+    console.log(`\nLedger #${ledgerRow.id}: "${extractName(ledgerRow.narration)}" (₦${ledgerAmount})`);
+    scored.forEach((s, i) => {
+      let warning = '';
+      if (s.integrity.flag === 'UNEXPLAINED_GAP') {
+        warning = `  ⚠️  AMOUNT MISMATCH: ₦${s.integrity.gap} unexplained gap — DO NOT auto-confirm`;
+      } else if (s.integrity.flag === 'EXPLAINED_FEE') {
+        warning = `  ℹ️  Gap explained: ${s.integrity.reason}`;
+      }
+      console.log(`  ${i + 1}. Statement #${s.stmtRow.id}: "${extractName(s.stmtRow.narration)}" (₦${getStatementAmount(s.stmtRow)}) → ${(s.score.combined * 100).toFixed(1)}% confidence`);
+      if (warning) console.log(warning);
+    });
+  }
+});
+
+console.log('\n=================================================================');
+
+
+// --- Penalize Combined Score for Unexplained Amount Gaps ---
+
+function calculateMatchScoreWithIntegrity(ledgerRow, stmtRow) {
+  const score = calculateMatchScore(ledgerRow, stmtRow);
+  const integrity = checkAmountIntegrity(getLedgerAmount(ledgerRow), getStatementAmount(stmtRow));
+
+  let adjustedCombined = score.combined;
+  if (integrity.flag === 'UNEXPLAINED_GAP') {
+    adjustedCombined = adjustedCombined * 0.4; // heavy penalty — pushes it visibly lower
+  }
+
+  return { ...score, adjustedCombined: Math.round(adjustedCombined * 1000) / 1000, integrity };
+}
+
+console.log('\n\n========== FINAL RANKED SUGGESTIONS (CORRECTED) ==========');
+
+ledgerRows.forEach(ledgerRow => {
+  const mainStatementRows = statementClassified.filter(row => row.lineType === 'MAIN');
+  const ledgerAmount = getLedgerAmount(ledgerRow);
+
+  const scored = mainStatementRows
+    .map(stmtRow => ({ stmtRow, s: calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow) }))
+    .filter(x => x.s.adjustedCombined >= SUGGESTION_MIN_SCORE || (x.s.integrity.flag === 'UNEXPLAINED_GAP' && x.s.nameScore >= 0.75))
+    .sort((a, b) => b.s.adjustedCombined - a.s.adjustedCombined)
+    .slice(0, 3);
+
+  if (scored.length > 0) {
+    console.log(`\nLedger #${ledgerRow.id}: "${extractName(ledgerRow.narration)}" (₦${ledgerAmount})`);
+    scored.forEach((x, i) => {
+      const warn = x.s.integrity.flag === 'UNEXPLAINED_GAP' ? `  ⚠️  Amount mismatch (₦${x.s.integrity.gap} gap) — not auto-confirmable` : '';
+      console.log(`  ${i + 1}. Statement #${x.stmtRow.id}: "${extractName(x.stmtRow.narration)}" → ${(x.s.adjustedCombined * 100).toFixed(1)}% confidence`);
+      if (warn) console.log(warn);
+    });
+  }
+});
+
+console.log('\n=================================================================');
+
+// --- Better Penalty: only crush the AMOUNT component, keep name+date credit ---
+
+function calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow) {
+  const score = calculateMatchScore(ledgerRow, stmtRow);
+  const integrity = checkAmountIntegrity(getLedgerAmount(ledgerRow), getStatementAmount(stmtRow));
+
+  let adjustedCombined = score.combined;
+  if (integrity.flag === 'UNEXPLAINED_GAP') {
+    // Recompute using name + date only (amount treated as untrusted, not "wrong")
+    adjustedCombined = (score.nameScore * 0.65) + (score.dateScore * 0.35);
+    adjustedCombined = Math.min(adjustedCombined, 0.75); // hard cap: never beats a real exact match
+  }
+
+  return { ...score, adjustedCombined: Math.round(adjustedCombined * 1000) / 1000, integrity };
+}
