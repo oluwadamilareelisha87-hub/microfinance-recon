@@ -491,3 +491,110 @@ trueStatementOnlyMain.forEach(stmtRow => {
 });
 
 console.log('\n=================================================================');
+
+// --- Build Unified Report Rows (for CSV export) ---
+
+const reportRows = [];
+
+// Matched entries
+matched.forEach(r => {
+  reportRows.push({
+    category: 'MATCHED',
+    ledger_id: r.ledgerId,
+    ledger_narration: r.ledgerNarration,
+    ledger_amount: r.ledgerAmount,
+    statement_id: r.candidates[0].id,
+    statement_narration: r.candidates[0].narration,
+    confidence: '100%',
+    note: ''
+  });
+});
+
+// Ledger-only unmatched (with their best ranked suggestion, if any)
+unmatched.forEach(r => {
+  const ledgerRow = ledgerRows.find(l => l.id === r.ledgerId);
+  const mainStatementRows = statementClassified.filter(row => row.lineType === 'MAIN');
+  const best = mainStatementRows
+    .map(stmtRow => ({ stmtRow, s: calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow) }))
+    .filter(x => x.s.nameScore >= 0.5)
+    .sort((a, b) => b.s.adjustedCombined - a.s.adjustedCombined)[0];
+
+  reportRows.push({
+    category: 'UNMATCHED_LEDGER_ONLY',
+    ledger_id: r.ledgerId,
+    ledger_narration: r.ledgerNarration,
+    ledger_amount: r.ledgerAmount,
+    statement_id: best ? best.stmtRow.id : '',
+    statement_narration: best ? best.stmtRow.narration : '',
+    confidence: best ? (best.s.adjustedCombined * 100).toFixed(1) + '%' : '',
+    note: best && best.s.integrity.flag === 'UNEXPLAINED_GAP' ? `Possible match, ₦${best.s.integrity.gap} gap unexplained` : 'No plausible match found'
+  });
+});
+
+// Duplicate suspects
+duplicateSuspects.forEach(r => {
+  reportRows.push({
+    category: 'DUPLICATE_SUSPECT',
+    ledger_id: r.ledgerId,
+    ledger_narration: r.ledgerNarration,
+    ledger_amount: r.ledgerAmount,
+    statement_id: r.candidates.map(c => c.id).join(' or '),
+    statement_narration: r.candidates.map(c => c.narration).join(' | '),
+    confidence: '100%',
+    note: 'Multiple ledger entries claim the same statement line — needs manual assignment'
+  });
+});
+
+// Bank-only unmatched (true exceptions)
+trueStatementOnlyMain.forEach(stmtRow => {
+  const best = ledgerRows
+    .map(ledgerRow => ({ ledgerRow, s: calculateMatchScoreWithIntegrityV2(ledgerRow, stmtRow) }))
+    .filter(x => x.s.nameScore >= 0.5)
+    .sort((a, b) => b.s.adjustedCombined - a.s.adjustedCombined)[0];
+
+  reportRows.push({
+    category: 'UNMATCHED_BANK_ONLY',
+    ledger_id: best ? best.ledgerRow.id : '',
+    ledger_narration: best ? best.ledgerRow.narration : '',
+    ledger_amount: best ? getLedgerAmount(best.ledgerRow) : '',
+    statement_id: stmtRow.id,
+    statement_narration: stmtRow.narration,
+    confidence: best ? (best.s.adjustedCombined * 100).toFixed(1) + '%' : '',
+    note: best ? `Possible match, ₦${best.s.integrity.gap} gap unexplained` : 'No plausible ledger match — likely unrecorded'
+  });
+});
+
+// Reversals (informational, not exceptions)
+reversedOriginals.forEach(row => {
+  reportRows.push({
+    category: 'REVERSED_NO_ACTION',
+    ledger_id: '',
+    ledger_narration: '',
+    ledger_amount: '',
+    statement_id: row.id,
+    statement_narration: row.narration,
+    confidence: '',
+    note: 'Transaction was reversed by the bank — no action needed'
+  });
+});
+
+console.log('\n\nTotal report rows built:', reportRows.length);
+console.log('Sample row:', reportRows[0]);
+
+// --- Export Report to CSV ---
+
+const Papa = require('papaparse');
+const fs = require('fs');
+const path = require('path');
+
+const csv = Papa.unparse(reportRows);
+
+const outputDir = path.join(__dirname, '..', 'reports');
+if (!fs.existsSync(outputDir)) {
+  fs.mkdirSync(outputDir);
+}
+
+const outputPath = path.join(outputDir, 'reconciliation_report.csv');
+fs.writeFileSync(outputPath, '\uFEFF' + csv);
+
+console.log('\n\n✅ Report exported to:', outputPath);
